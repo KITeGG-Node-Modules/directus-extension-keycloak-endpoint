@@ -38,7 +38,7 @@ export default {
       const association = groups.find(group => enumAssociation.includes(group.name))
       if (association) user.association = association.name
       const type = groups.find(group => enumType.includes(group.name))
-      if (association) user.type = type.name
+      if (type) user.type = type.name
 
       user.profiles = groups.filter(group => group.name.indexOf('gpu-') === 0).map(group => group.name)
 
@@ -236,8 +236,8 @@ export default {
         })).shift()
         if (user) {
           await usersService.deleteOne(user.id)
+          logger.info(`${LOG_PREFIX}Deleted Directus user with ID ${user.id}`)
         }
-        logger.info(`${LOG_PREFIX}Deleted Directus user with ID ${user.id}`)
         return {
           id: req.params.id,
           directusId: user?.id
