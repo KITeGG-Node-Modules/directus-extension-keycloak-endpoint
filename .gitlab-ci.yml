@@ -1,0 +1,14 @@
+stages:
+  - publish
+
+# Publishes the extension package to this project's npm registry on tags.
+# The @kitegg scope is required by the GitLab npm registry (root namespace).
+publish-npm:
+  stage: publish
+  image: node:22
+  rules:
+    - if: $CI_COMMIT_TAG
+  script:
+    - echo "@kitegg:registry=https://${CI_SERVER_HOST}/api/v4/projects/${CI_PROJECT_ID}/packages/npm/" > .npmrc
+    - echo "//${CI_SERVER_HOST}/api/v4/projects/${CI_PROJECT_ID}/packages/npm/:_authToken=${CI_JOB_TOKEN}" >> .npmrc
+    - npm publish
