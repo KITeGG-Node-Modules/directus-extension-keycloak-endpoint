@@ -148,6 +148,11 @@ export default {
       const {data: groups} = await client.get(`/groups`)
       const {data: subjectGroups} = await client.get(`/users/${req.params.id}/groups`)
 
+      // Remember the requested association/type before they are removed from
+      // the payload below — they are needed to re-map the Directus role
+      const requestedAssociation = data.association
+      const requestedType = data.type
+
       if (data.association) {
         const existingAssociation = subjectGroups.find(group => enumAssociation.includes(group.name))
         const association = groups.find(group => group.name === data.association)
@@ -192,6 +197,32 @@ export default {
       if (data.firstName) directusPayload.first_name = data.firstName
       if (data.lastName) directusPayload.last_name = data.lastName
       if (typeof data.auth_data !== 'undefined') directusPayload.auth_data = data.auth_data
+
+      // Keep the Directus role in sync when the association or type was
+      // changed, using the same role_group_mapping the auth hook applies on
+      // login (groupId "<association>-<type>"); otherwise the user keeps the
+      // old role in Directus until their next login
+      if (requestedAssociation || requestedType) {
+        const existingAssociation = subjectGroups.find(group => enumAssociation.includes(group.name))
+        const existingType = subjectGroups.find(group => enumType.includes(group.name))
+        const association = requestedAssociation || existingAssociation?.name
+        const type = requestedType || existingType?.name
+        if (association && type) {
+          try {
+            const mappingService = new ItemsService('role_group_mapping', {
+              schema: req.schema,
+              accountability: req.accountability
+            })
+            const results = await mappingService.readByQuery({
+              filter: { groupId: `${association}-${type}` }
+            })
+            const roleId = results.map(mapping => mapping.roleId).shift()
+            if (roleId) directusPayload.role = roleId
+          } catch (err) {
+            logger.error(`${LOG_PREFIX}Failed to look up role mapping: ${err.message}`)
+          }
+        }
+      }
 
       if (Object.keys(directusPayload).length) {
         const usersService = new UsersService({schema: req.schema, accountability: req.accountability})
