@@ -5,6 +5,7 @@ import { filterUser } from './filter-props.js'
 import { generatePassword } from './random-password.js'
 import { handleErrorResponse } from 'kitegg-directus-extension-common'
 import { isRequestAllowed } from './is-request-allowed.js'
+import { extractLastLogin } from './last-login.js'
 
 import { LOG_PREFIX } from './constants.js'
 
@@ -17,6 +18,31 @@ export default {
     const allowGroups = ['staff', 'management']
     const propWhitelist = ['firstName', 'lastName', 'email']
 
+    // Maps Keycloak user IDs to the last access date of the linked Directus
+    // users. Directus updates last_access on login and token refresh, so it
+    // works as a "last seen" date for users logged in through Directus.
+    async function getLastSeenByUser (ctx, ids) {
+      const lastSeenByUser = new Map()
+      if (!ids.length) return lastSeenByUser
+      const usersService = new UsersService({schema: ctx.req.schema, accountability: ctx.req.accountability})
+      try {
+        for (let i = 0; i < ids.length; i += 100) {
+          const chunk = ids.slice(i, i + 100)
+          const users = await usersService.readByQuery({
+            filter: {external_identifier: {_in: chunk}},
+            fields: ['external_identifier', 'last_access'],
+            limit: chunk.length
+          })
+          for (const user of users) {
+            lastSeenByUser.set(user.external_identifier, user.last_access)
+          }
+        }
+      } catch (err) {
+        logger.error(`${LOG_PREFIX}Failed to read Directus last access dates: ${err.message}`)
+      }
+      return lastSeenByUser
+    }
+
     //
     // Users
     //
@@ -25,7 +51,12 @@ export default {
     // FIND
     router.get('/users', baseRequestHandler(async ctx => {
       const {data: users} = await ctx.client.get('/users', {params: ctx.req.query})
-      return users.map(user => filterUser(user))
+      const lastSeenByUser = await getLastSeenByUser(ctx, users.map(user => user.id))
+      return users.map(user => filterUser({
+        ...user,
+        lastLogin: extractLastLogin(user),
+        lastSeen: lastSeenByUser.get(user.id) ?? null
+      }))
     }, context, allowGroups, propWhitelist))
 
     //
@@ -41,6 +72,10 @@ export default {
       if (type) user.type = type.name
 
       user.profiles = groups.filter(group => group.name.indexOf('gpu-') === 0).map(group => group.name)
+
+      user.lastLogin = extractLastLogin(user)
+      const lastSeenByUser = await getLastSeenByUser(ctx, [user.id])
+      user.lastSeen = lastSeenByUser.get(user.id) ?? null
 
       return filterUser(user)
     }, context, allowGroups, propWhitelist))

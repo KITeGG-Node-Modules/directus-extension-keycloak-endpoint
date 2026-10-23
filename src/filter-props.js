@@ -8,7 +8,9 @@ const publicUserProps = [
   'type',
   'profiles',
   'temporaryPassword',
-  'enabled'
+  'enabled',
+  'lastLogin',
+  'lastSeen'
 ]
 
 function filterUser (data) {
