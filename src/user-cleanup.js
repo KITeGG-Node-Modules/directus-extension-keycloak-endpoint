@@ -1,0 +1,176 @@
+// Directus-side object handling for the user deletion sequence.
+//
+// Objects created by the deleted user are either transferred to a
+// co-author (items with an authors list keep their remaining co-authors as
+// owner), to a fallback user chosen in the deletion dialog ("orphaned"
+// objects without co-authors), or — when no fallback was chosen — undeployed
+// (deployments, via the undeploy-on-delete hook of the kubernetes endpoint)
+// and removed.
+
+// The collections offered in the deletion dialog, with their ownership
+// semantics:
+// - authorsField: m2m field naming the users with co-rights; a remaining
+//   co-author becomes the new owner
+// - userM2MFields: m2m fields referencing users whose junction rows must be
+//   pruned when the user is deleted
+// - userField: plain m2o field naming the user the object belongs to
+//   (gpu reservations are deleted with the user, not transferred — they
+//   have no co-author concept)
+export const USER_COLLECTIONS = [
+  { collection: 'deployments', authorsField: 'authors', userM2MFields: ['authors'] },
+  { collection: 'results', authorsField: 'authors', userM2MFields: ['authors'] },
+  { collection: 'courses', authorsField: 'authors', userM2MFields: ['authors', 'members', 'collaborators'] },
+  { collection: 'course_sections' },
+  { collection: 'external_materials' },
+  { collection: 'volumes' },
+  { collection: 'gpu_reservations', userField: 'user', deleteOnly: true }
+]
+
+export const DEFAULT_COLLECTION_SCOPE = USER_COLLECTIONS.map(c => c.collection)
+
+export function isKnownCollection (collection) {
+  return USER_COLLECTIONS.some(c => c.collection === collection)
+}
+
+/**
+ * Resolves the junction collection and its user field for an m2m field
+ * (e.g. the `authors` field of `deployments`) from the Directus schema, so
+ * junction naming never has to be hardcoded.
+ */
+export function findUserJunction (schema, collection, field) {
+  const relations = schema?.relations || []
+  const relation = relations.find(r =>
+    (r.related_collection === collection && r.meta?.one_field === field) ||
+    (r.collection === collection && r.field === field && r.meta?.many_collection)
+  )
+  if (!relation) return null
+  const junctionCollection = relation.meta?.many_collection || relation.collection
+  const userField = relation.meta?.junction_field || 'directus_users_id'
+  return { junctionCollection, userField }
+}
+
+/**
+ * Handles all in-scope objects of the deleted user and prunes their
+ * remaining user references from junction tables.
+ *
+ * Runs with system accountability: the orchestrating admin must be able to
+ * clean up objects they could not necessarily read or modify themselves.
+ * Every operation is idempotent — items already handled on an earlier run
+ * simply no longer match.
+ *
+ * Returns a step report: per-collection counters and per-object errors.
+ */
+export async function cleanupUserObjects ({ services, schema, logger, logPrefix, directusUser, scope, transferTo }) {
+  const report = {
+    transferred: {},
+    deletedItems: {},
+    errors: []
+  }
+  const { ItemsService } = services
+
+  for (const entry of USER_COLLECTIONS) {
+    if (scope.length && !scope.includes(entry.collection)) continue
+    const { collection, authorsField, userField, deleteOnly } = entry
+    const service = new ItemsService(collection, { schema, accountability: null })
+
+    let items
+    try {
+      items = await service.readByQuery({
+        filter: userField
+          ? {
+              _or: [
+                { user_created: { _eq: directusUser.id } },
+                { [userField]: { _eq: directusUser.id } }
+              ]
+            }
+          : { user_created: { _eq: directusUser.id } },
+        fields: [
+          'id',
+          // junction row ids plus the referenced users, needed to find the
+          // remaining co-authors and prune the deleted user's rows
+          ...(authorsField ? [`${authorsField}.id`, `${authorsField}.directus_users_id.id`] : [])
+        ],
+        limit: -1
+      }) || []
+    } catch (err) {
+      report.errors.push({ collection, message: `Failed to read items: ${err.message}` })
+      continue
+    }
+
+    const itemErrors = []
+    for (const item of items) {
+      try {
+        // gpu reservations are always removed with the user (they are
+        // personal by nature — reserved for and created by them)
+        if (deleteOnly) {
+          await service.deleteOne(item.id)
+          report.deletedItems[collection] = (report.deletedItems[collection] || 0) + 1
+          continue
+        }
+
+        const junctionRows = authorsField ? (item[authorsField] || []) : []
+        const coAuthors = junctionRows
+          .map(row => row?.directus_users_id?.id)
+          .filter(id => id && id !== directusUser.id)
+
+        let newOwner = coAuthors[0]
+        let transferKind = 'co_author'
+        if (!newOwner) {
+          if (!transferTo) {
+            // true orphan: undeployed (deployments, via the kubernetes
+            // endpoint's undeploy-on-delete hook) and removed with the item
+            await service.deleteOne(item.id)
+            report.deletedItems[collection] = (report.deletedItems[collection] || 0) + 1
+            continue
+          }
+          newOwner = transferTo
+          transferKind = 'fallback'
+        }
+
+        await service.updateOne(item.id, { user_created: newOwner })
+        report.transferred[collection] = (report.transferred[collection] || 0) + 1
+        if (logger) {
+          logger.info(`${logPrefix}Transferred ${collection} ${item.id} to ${newOwner} (${transferKind})`)
+        }
+      } catch (err) {
+        itemErrors.push({ collection, id: item.id, message: err.message })
+      }
+    }
+    report.errors.push(...itemErrors)
+  }
+
+  // Prune the deleted user's junction rows across all in-scope collections
+  // — including items owned by other users (membership lists etc. must not
+  // dangle-reference the deleted account). Out-of-scope collections keep
+  // their rows on purpose: their objects are explicitly excluded from the
+  // deletion.
+  for (const entry of USER_COLLECTIONS) {
+    if (scope.length && !scope.includes(entry.collection)) continue
+    for (const field of entry.userM2MFields || []) {
+      const junction = findUserJunction(schema, entry.collection, field)
+      if (!junction) {
+        report.errors.push({
+          collection: entry.collection,
+          message: `No junction collection found for m2m field ${field}`
+        })
+        continue
+      }
+      const junctionService = new ItemsService(junction.junctionCollection, {
+        schema,
+        accountability: null
+      })
+      try {
+        await junctionService.deleteByQuery({
+          filter: { [junction.userField]: { _eq: directusUser.id } }
+        })
+      } catch (err) {
+        report.errors.push({
+          collection: entry.collection,
+          message: `Failed to prune ${junction.junctionCollection}: ${err.message}`
+        })
+      }
+    }
+  }
+
+  return report
+}

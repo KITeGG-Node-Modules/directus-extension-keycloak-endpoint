@@ -6,6 +6,11 @@ import { generatePassword } from './random-password.js'
 import { handleErrorResponse } from 'kitegg-directus-extension-common'
 import { isRequestAllowed } from './is-request-allowed.js'
 import { extractLastLogin } from './last-login.js'
+import { isJupyterHubConfigured } from './config.js'
+import { deleteJupyterUser } from './jupyterhub.js'
+import { cleanupUserObjects } from './user-cleanup.js'
+import { parseDeleteOptions } from './delete-options.js'
+import { isNotFound } from './is-not-found.js'
 
 import { LOG_PREFIX } from './constants.js'
 
@@ -280,6 +285,15 @@ export default {
 
     //
     // DELETE
+    //
+    // Full user deletion across all three systems, in dependency order:
+    // 1. JupyterHub (server, hub user, home volume)
+    // 2. Directus (object transfer/removal, junction pruning, the user)
+    // 3. Keycloak (the IdP account)
+    //
+    // Every step is idempotent (already-deleted state = success) so the
+    // whole deletion can be re-run after a partial failure; the response
+    // carries a per-step report for the frontend dialog.
     router.delete('/users/:id', baseRequestHandler(async ctx => {
       if (!ctx.req.params.id || !ctx.req.params.id.length) {
         ctx.res.status(400)
@@ -292,29 +306,115 @@ export default {
       }
 
       const {client, req} = ctx
-      await client.delete(`/users/${ctx.req.params.id}`)
-      const usersService = new UsersService({schema: req.schema, accountability: req.accountability})
+      const keycloakUserId = req.params.id
+
+      let options
       try {
-        const user = (await usersService.readByQuery({
-          filter: {
-            external_identifier: req.params.id
-          }
-        })).shift()
-        if (user) {
-          await usersService.deleteOne(user.id)
-          logger.info(`${LOG_PREFIX}Deleted Directus user with ID ${user.id}`)
-        }
-        return {
-          id: req.params.id,
-          directusId: user?.id
-        }
+        options = parseDeleteOptions(req.body)
       } catch (err) {
-        logger.error(`${LOG_PREFIX}Failed to delete Directus user: ${err.message}`)
-        return {
-          id: req.params.id,
-          directusError: err.message
+        ctx.res.status(400)
+        return ctx.res.send({message: `api_errors.bad_request: ${err.message}`})
+      }
+
+      const report = {
+        id: keycloakUserId,
+        directusId: null,
+        jupyterhub: null,
+        directus: null,
+        keycloak: {deleted: false},
+        success: false
+      }
+
+      // The Directus user must be resolved first: every step works with its
+      // id, and on re-runs after partial failures the username for the
+      // JupyterHub step can only be resolved while the Keycloak account
+      // still exists
+      const usersService = new UsersService({schema: req.schema, accountability: null})
+      let directusUser
+      try {
+        directusUser = (await usersService.readByQuery({
+          filter: {external_identifier: keycloakUserId}
+        })).shift()
+      } catch (err) {
+        logger.error(`${LOG_PREFIX}Failed to look up Directus user: ${err.message}`)
+      }
+      report.directusId = directusUser?.id || null
+
+      //
+      // 1. JupyterHub
+      //
+      try {
+        if (!isJupyterHubConfigured()) {
+          throw new Error('JupyterHub API is not configured (JUPYTERHUB_API_URL / JUPYTERHUB_API_TOKEN)')
+        }
+        const {data: keycloakUser} = await client.get(`/users/${keycloakUserId}`)
+        const username = keycloakUser?.username
+        if (!username) throw new Error('Keycloak user has no username')
+        report.jupyterhub = await deleteJupyterUser({
+          username,
+          deleteVolume: options.deleteJupyterVolume
+        })
+      } catch (err) {
+        if (isNotFound(err)) {
+          // The Keycloak account is already gone (re-run after a partial
+          // failure): the hub account was handled by the earlier run — the
+          // username can no longer be resolved, but there is nothing left
+          // to clean up that the previous run missed
+          report.jupyterhub = {skipped: 'keycloak user already deleted'}
+          logger.info(`${LOG_PREFIX}JupyterHub step skipped: Keycloak user ${keycloakUserId} already deleted`)
+        } else {
+          report.jupyterhub = {error: err.message}
+          logger.error(`${LOG_PREFIX}JupyterHub step failed: ${err.message}`)
+          return report
         }
       }
+
+      //
+      // 2. Directus
+      //
+      try {
+        if (directusUser) {
+          report.directus = await cleanupUserObjects({
+            services,
+            schema: req.schema,
+            logger,
+            logPrefix: LOG_PREFIX,
+            directusUser,
+            scope: options.collections,
+            transferTo: options.transferTo
+          })
+          await usersService.deleteOne(directusUser.id)
+          logger.info(`${LOG_PREFIX}Deleted Directus user with ID ${directusUser.id}`)
+        } else {
+          report.directus = {skipped: 'no linked Directus user'}
+        }
+      } catch (err) {
+        report.directus = report.directus || {}
+        report.directus.error = err.message
+        logger.error(`${LOG_PREFIX}Directus step failed: ${err.message}`)
+        // The IdP account must not outlive a Directus user that still
+        // exists — leave Keycloak untouched and let the admin re-run
+        return report
+      }
+
+      //
+      // 3. Keycloak
+      //
+      try {
+        await client.delete(`/users/${keycloakUserId}`)
+        report.keycloak.deleted = true
+      } catch (err) {
+        if (isNotFound(err)) {
+          report.keycloak.deleted = true
+          report.keycloak.note = 'already deleted'
+        } else {
+          report.keycloak.error = err.message
+          logger.error(`${LOG_PREFIX}Keycloak step failed: ${err.message}`)
+        }
+      }
+
+      report.success = !report.directus?.errors?.length && !report.keycloak.error
+      return report
     }, context, allowGroups, propWhitelist))
 
     //

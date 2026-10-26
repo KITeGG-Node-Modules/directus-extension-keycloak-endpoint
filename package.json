@@ -24,6 +24,7 @@
 		"kitegg-directus-extension-common": "github:KITeGG-Node-Modules/kitegg-directus-extension-common",
 		"querystring": "^0.2.1",
 		"secure-random-password": "^0.2.3",
-		"validator": "^13.9.0"
+		"validator": "^13.9.0",
+		"@kubernetes/client-node": "0.18.1"
 	}
 }

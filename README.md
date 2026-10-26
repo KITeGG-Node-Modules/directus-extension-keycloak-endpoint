@@ -119,7 +119,46 @@ POST /keycloak/users/<ID>/password
 DELETE /keycloak/users/<ID>
 ```
 
-Will try to delete the associated Directus User as well.
+Deletes the user across all three systems in dependency order:
+
+1. **JupyterHub**: stops the running server, deletes the hub user and
+   removes the home volume (`claim-<username>`). With KubeSpawner's default
+   `delete_pvc = true` the hub itself removes the volume together with the
+   user — the explicit deletion is a safety net and treats an already-gone
+   volume as success. Requires `JUPYTERHUB_API_URL` and
+   `JUPYTERHUB_API_TOKEN` (plus `JUPYTERHUB_NAMESPACE`, default
+   `jupyterhub`); without them the step fails loudly instead of silently
+   leaving hub users behind.
+2. **Directus**: objects created by the user are either transferred to a
+   remaining co-author, to a fallback user from the options, or — when
+   neither exists — undeployed (via the kubernetes endpoint's
+   undeploy-on-delete hook) and removed. The user's rows in the
+   authors/members/collaborators junction tables are pruned, then the
+   Directus user is deleted. If this step fails, the Keycloak account is
+   left untouched so the deletion can be retried.
+3. **Keycloak**: the IdP account (already-deleted is treated as success).
+
+An optional JSON body configures the Directus step:
+
+```json
+{
+  "collections": ["deployments", "results", "courses",
+    "course_sections", "external_materials", "volumes",
+    "gpu_reservations"],
+  "transferTo": "<directus user id>",
+  "deleteJupyterVolume": true
+}
+```
+
+`collections` limits the object scope (default: all of the above),
+`transferTo` receives orphaned objects (without co-authors; without it they
+are undeployed and removed), and `deleteJupyterVolume` disables the home
+volume deletion when set to `false`.
+
+Every step is idempotent (already-deleted state counts as success), so the
+deletion can simply be re-run after a partial failure. The response carries
+a per-step report (`jupyterhub`, `directus`, `keycloak`) with the outcome of
+each step, per-object errors, and an overall `success` flag.
 
 ## Last login and last seen
 
