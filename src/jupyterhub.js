@@ -6,8 +6,18 @@ import { JUPYTERHUB_API_TOKEN, JUPYTERHUB_API_URL } from './config.js'
 // Hub API client — the base URL points at the JupyterHub REST API
 // (e.g. https://jupyter.example.com/hub/api) and the token is a JupyterHub
 // admin API token
+// JupyterHub's REST API always lives at <hub>/hub/api — accept base URLs
+// with or without that suffix so a misconfigured URL doesn't silently hit
+// the hub's web routes (which answer browser requests with XSRF errors)
+function hubApiBaseUrl (url) {
+  const trimmed = (url || '').replace(/\/+$/, '')
+  if (!trimmed || trimmed.endsWith('/api')) return trimmed
+  if (trimmed.endsWith('/hub')) return `${trimmed}/api`
+  return `${trimmed}/hub/api`
+}
+
 const hubClient = axios.create({
-  baseURL: JUPYTERHUB_API_URL,
+  baseURL: hubApiBaseUrl(JUPYTERHUB_API_URL),
   headers: { Authorization: `token ${JUPYTERHUB_API_TOKEN}` },
   timeout: 15000
 })
@@ -19,7 +29,13 @@ const hubClient = axios.create({
 hubClient.interceptors.response.use(null, err => {
   const status = err.response?.status
   const data = err.response?.data
-  const detail = data?.message || (typeof data === 'string' ? data.trim() : '')
+  // API errors carry a message field; a full HTML document means the
+  // request hit a non-API route — summarize instead of dumping the page
+  const detail = data?.message
+    ? data.message
+    : (typeof data === 'string' && data.trim().startsWith('<'))
+        ? '<HTML error page — not an API response>'
+        : (typeof data === 'string' ? data.trim() : '')
   if (status) {
     err.message = `JupyterHub API returned ${status}${detail ? `: ${detail}` : ''}`
   }
