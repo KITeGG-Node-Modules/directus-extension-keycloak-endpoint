@@ -160,6 +160,16 @@ deletion can simply be re-run after a partial failure. The response carries
 a per-step report (`jupyterhub`, `directus`, `keycloak`) with the outcome of
 each step, per-object errors, and an overall `success` flag.
 
+#### Who may delete whom
+
+The endpoint enforces the same role ranking as the frontend menus: the
+calling user must strictly outrank the target — staff may delete students,
+management students and staff, admin anyone. Management deleting management
+requires an admin; unknown roles are rejected. Targets without a linked
+Directus user have nothing to rank and only their Keycloak account is
+removed. The check runs before any destructive step, so bulk deletions are
+validated per user.
+
 #### Kubernetes permissions for the volume deletion
 
 The extension runs inside the Directus pod, so the pod's ServiceAccount

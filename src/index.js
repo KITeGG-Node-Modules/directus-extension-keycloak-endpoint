@@ -10,6 +10,7 @@ import { isJupyterHubConfigured } from './config.js'
 import { deleteJupyterUser } from './jupyterhub.js'
 import { cleanupUserObjects } from './user-cleanup.js'
 import { parseDeleteOptions } from './delete-options.js'
+import { assertDeletionAllowed } from './deletion-permissions.js'
 import { isNotFound } from './is-not-found.js'
 
 import { LOG_PREFIX } from './constants.js'
@@ -339,6 +340,24 @@ export default {
         logger.error(`${LOG_PREFIX}Failed to look up Directus user: ${err.message}`)
       }
       report.directusId = directusUser?.id || null
+
+      // Only callers strictly outranking the target may delete it (admin →
+      // anyone, management → students and staff, staff → students;
+      // management on management requires an admin). A target without a
+      // linked Directus user cannot be ranked — only its Keycloak account
+      // is removed.
+      if (directusUser) {
+        try {
+          await assertDeletionAllowed({
+            callerUser: ctx.user,
+            targetUser: directusUser,
+            services,
+            schema: req.schema
+          })
+        } catch (err) {
+          return handleErrorResponse(ctx, err)
+        }
+      }
 
       //
       // 1. JupyterHub
