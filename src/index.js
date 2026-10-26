@@ -69,8 +69,37 @@ export default {
     // GET
     router.get('/users/:id', baseRequestHandler(async ctx => {
       const {client, req} = ctx
-      const {data: user} = await client.get(`/users/${req.params.id}`)
-      const {data: groups} = await client.get(`/users/${req.params.id}/groups`)
+      let user
+      let groups = []
+      try {
+        const {data: keycloakUser} = await client.get(`/users/${req.params.id}`)
+        user = keycloakUser
+        ;({data: groups} = await client.get(`/users/${req.params.id}/groups`))
+      } catch (err) {
+        // The Keycloak account is gone (stale external_identifier on a
+        // provider: keycloak user): fall back to the linked Directus user so
+        // the account stays editable instead of failing with a 404
+        if (!isNotFound(err)) throw err
+        const usersService = new UsersService({schema: req.schema, accountability: null})
+        const directusUser = (await usersService.readByQuery({
+          filter: {external_identifier: req.params.id},
+          fields: ['id', 'external_identifier', 'first_name', 'last_name', 'email']
+        })).shift()
+        if (!directusUser) throw err
+        return filterUser({
+          id: directusUser.external_identifier,
+          username: directusUser.external_identifier,
+          firstName: directusUser.first_name,
+          lastName: directusUser.last_name,
+          email: directusUser.email,
+          association: null,
+          type: null,
+          profiles: [],
+          keycloakMissing: true,
+          lastLogin: null,
+          lastSeen: null
+        })
+      }
 
       const association = groups.find(group => enumAssociation.includes(group.name))
       if (association) user.association = association.name
