@@ -46,7 +46,13 @@ export function findUserJunction (schema, collection, field) {
   if (!relation) return null
   const junctionCollection = relation.meta?.many_collection || relation.collection
   const userField = relation.meta?.junction_field || 'directus_users_id'
-  return { junctionCollection, userField }
+  // The junction's FK field pointing back to the parent item (e.g.
+  // "deployments_id" on "deployments_authors")
+  const itemRelation = relations.find(r =>
+    r.collection === junctionCollection && r.related_collection === collection
+  )
+  const itemField = itemRelation?.field
+  return { junctionCollection, userField, itemField }
 }
 
 /**
@@ -128,6 +134,21 @@ export async function cleanupUserObjects ({ services, schema, logger, logPrefix,
         }
 
         await service.updateOne(item.id, { user_created: newOwner })
+        // The overview and the access checks work off the authors junction,
+        // not user_created — a fallback recipient who is not yet an author
+        // would own an item that displays no name and that they could not
+        // edit as author. With remaining co-authors this is unnecessary: the
+        // new owner is the first of them and thus already an author.
+        if (transferKind === 'fallback' && authorsField) {
+          const junction = findUserJunction(schema, collection, authorsField)
+          if (junction?.itemField) {
+            const junctionService = new ItemsService(junction.junctionCollection, { schema, accountability: null })
+            await junctionService.createOne({
+              [junction.itemField]: item.id,
+              [junction.userField]: newOwner
+            })
+          }
+        }
         report.transferred[collection] = (report.transferred[collection] || 0) + 1
         if (logger) {
           logger.info(`${logPrefix}Transferred ${collection} ${item.id} to ${newOwner} (${transferKind})`)
