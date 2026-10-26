@@ -12,6 +12,20 @@ const hubClient = axios.create({
   timeout: 15000
 })
 
+// Axios error messages only say "Request failed with status code N" — append
+// the hub's own response message so the step report says WHY a request was
+// rejected (invalid token, missing scope, …) instead of a bare status code.
+// The original error object is kept intact so isNotFound() still works.
+hubClient.interceptors.response.use(null, err => {
+  const status = err.response?.status
+  const data = err.response?.data
+  const detail = data?.message || (typeof data === 'string' ? data.trim() : '')
+  if (status) {
+    err.message = `JupyterHub API returned ${status}${detail ? `: ${detail}` : ''}`
+  }
+  return Promise.reject(err)
+})
+
 // The JupyterHub home volume of a user is a PVC named claim-<username> in
 // the JupyterHub namespace (pvcNameTemplate "claim-{username}{servername}";
 // the default server has no name suffix)
