@@ -350,6 +350,7 @@ export default {
         try {
           await assertDeletionAllowed({
             callerUser: ctx.user,
+            callerIsAdmin: req.accountability?.admin === true,
             targetUser: directusUser,
             services,
             schema: req.schema
