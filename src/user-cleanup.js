@@ -184,6 +184,31 @@ export async function cleanupUserObjects ({ services, schema, logger, logPrefix,
     report.errors.push(...itemErrors)
   }
 
+  // Clear the user's attribution on uploaded files. The files themselves
+  // are kept — they are media assets that transferred content may still
+  // reference, and deleting them would break it — so the ownership is just
+  // dropped. Without this, the final user deletion fails on
+  // directus_files_uploaded_by_foreign.
+  try {
+    const filesService = new ItemsService('directus_files', { schema, accountability: null })
+    await filesService.updateByQuery(
+      {
+        filter: {
+          _or: [
+            { uploaded_by: { _eq: directusUser.id } },
+            { modified_by: { _eq: directusUser.id } }
+          ]
+        }
+      },
+      { uploaded_by: null, modified_by: null }
+    )
+  } catch (err) {
+    report.errors.push({
+      collection: 'directus_files',
+      message: `Failed to clear file attributions: ${err.message}`
+    })
+  }
+
   // Prune the deleted user's junction rows across all known collections
   // — including items owned by other users (membership lists etc. must not
   // dangle-reference the deleted account)
