@@ -81,21 +81,30 @@ export async function deleteJupyterUser ({ username, deleteVolume }) {
 }
 
 async function deleteJupyterUserSteps ({ username, deleteVolume, report }) {
-  // 1. Stop the running server (no-op with 404 when not running or when
-  // the user is already gone)
+  // Probe the user first. On re-runs after a partial failure the account
+  // is often already gone — and this hub version answers a server-stop
+  // request for a missing user with a 500 (AttributeError in the delete
+  // handler) instead of a 404, so probing keeps re-runs off that path
+  // entirely.
   let userGone = false
   try {
-    await hubClient.delete(`/users/${encodeURIComponent(username)}/server`)
-    report.serverStopped = true
+    await hubClient.get(`/users/${encodeURIComponent(username)}`)
   } catch (err) {
     if (!isNotFound(err)) throw err
     userGone = true
   }
 
-  // 2. Wait for the server to actually stop before deleting the user
-  if (report.serverStopped) {
-    await waitForServerShutdown(username)
+  if (userGone) {
+    // Nothing left to stop or delete — only the volume safety net remains
+    return
   }
+
+  // 1. Stop the running server (no-op with 404 when not running)
+  await hubClient.delete(`/users/${encodeURIComponent(username)}/server`)
+  report.serverStopped = true
+
+  // 2. Wait for the server to actually stop before deleting the user
+  await waitForServerShutdown(username)
 
   // 3. Delete the hub user (404 = already deleted, fine on re-runs)
   try {
@@ -103,7 +112,7 @@ async function deleteJupyterUserSteps ({ username, deleteVolume, report }) {
     report.userDeleted = true
   } catch (err) {
     if (!isNotFound(err)) throw err
-    if (!userGone) report.userDeleted = true
+    report.userDeleted = true
   }
 
   // 4. Delete the home volume when requested. This is a safety net: with
