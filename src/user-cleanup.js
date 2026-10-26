@@ -13,9 +13,10 @@
 //   co-author becomes the new owner
 // - userM2MFields: m2m fields referencing users whose junction rows must be
 //   pruned when the user is deleted
-// - userField: plain m2o field naming the user the object belongs to
-//   (gpu reservations are deleted with the user, not transferred — they
-//   have no co-author concept)
+// - userField: field naming the user the object belongs to — either a plain
+//   m2o field or an m2m through a junction (gpu_reservations.user is an m2m;
+//   reservations are deleted with the user, not transferred — they have no
+//   co-author concept)
 export const USER_COLLECTIONS = [
   { collection: 'deployments', authorsField: 'authors', userM2MFields: ['authors'] },
   { collection: 'results', authorsField: 'authors', userM2MFields: ['authors'] },
@@ -23,13 +24,32 @@ export const USER_COLLECTIONS = [
   { collection: 'course_sections' },
   { collection: 'external_materials' },
   { collection: 'volumes' },
-  { collection: 'gpu_reservations', userField: 'user', deleteOnly: true }
+  { collection: 'gpu_reservations', userField: 'user', userM2MFields: ['user'], deleteOnly: true }
 ]
 
 export const DEFAULT_COLLECTION_SCOPE = USER_COLLECTIONS.map(c => c.collection)
 
 export function isKnownCollection (collection) {
   return USER_COLLECTIONS.some(c => c.collection === collection)
+}
+
+/**
+ * Builds the filter matching "objects of the user" for a userField that is
+ * either a plain m2o (filter the field directly) or an m2m through a
+ * junction (filter through the junction's user FK — a direct _eq would
+ * compare the junction's integer primary key against the user uuid and fail
+ * with "invalid input syntax for type integer: NaN").
+ */
+export function buildUserScopeFilter (schema, collection, userField, userId) {
+  const m2m = schema?.relations?.find(r =>
+    r.related_collection === collection &&
+    r.meta?.one_field === userField &&
+    r.meta?.many_collection
+  )
+  if (m2m) {
+    return { [userField]: { directus_users_id: { _eq: userId } } }
+  }
+  return { [userField]: { _eq: userId } }
 }
 
 /**
@@ -86,7 +106,7 @@ export async function cleanupUserObjects ({ services, schema, logger, logPrefix,
           ? {
               _or: [
                 { user_created: { _eq: directusUser.id } },
-                { [userField]: { _eq: directusUser.id } }
+                buildUserScopeFilter(schema, collection, userField, directusUser.id)
               ]
             }
           : { user_created: { _eq: directusUser.id } },
