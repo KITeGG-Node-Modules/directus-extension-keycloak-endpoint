@@ -19,33 +19,21 @@ export function getRankFromRole (role) {
   return match ? ROLE_TYPES.indexOf(match[1]) : null
 }
 
-// Roles arrive either as full objects (when read with role fields) or as
-// bare role ids (default M2O behaviour) — resolve ids through the schema.
-// The "admin" field is NOT readable under non-admin field permissions (the
-// read fails with a field permission error), so only the name is requested;
-// admin detection relies on the role name, and for the caller additionally
-// on req.accountability.admin (passed in as callerIsAdmin).
-async function resolveRole (rolesService, role) {
-  if (!role || role.name) return role
-  return rolesService.readOne(role, { fields: ['name'] })
-}
-
 /**
  * The caller must strictly outrank the target user: staff may delete
  * students, management students and staff; admin anyone. Management
- * deleting management requires an admin. Runs before any destructive step.
+ * deleting management requires an admin. Both role names are resolved via
+ * the users relation (role.name) — reading directus_roles directly is not
+ * permitted for non-admin callers.
  */
-export async function assertDeletionAllowed ({ callerUser, callerIsAdmin, targetUser, services, schema }) {
-  const rolesService = new services.RolesService({ schema, accountability: null })
+export function isDeletionAllowed ({ callerRoleName, callerIsAdmin, targetRoleName }) {
   const callerRank = callerIsAdmin
     ? ADMIN_RANK
-    : getRankFromRole(await resolveRole(rolesService, callerUser?.role))
-  const targetRank = getRankFromRole(await resolveRole(rolesService, targetUser?.role))
+    : getRankFromRole({ name: callerRoleName })
+  const targetRank = getRankFromRole({ name: targetRoleName })
 
-  const allowed = callerRank !== null && targetRank !== null &&
+  return callerRank !== null && targetRank !== null &&
     (callerRank === ADMIN_RANK || targetRank < callerRank)
-
-  if (!allowed) {
-    throw DeletionNotAllowedError()
-  }
 }
+
+export { DeletionNotAllowedError }

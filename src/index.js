@@ -10,7 +10,7 @@ import { isJupyterHubConfigured } from './config.js'
 import { deleteJupyterUser } from './jupyterhub.js'
 import { cleanupUserObjects } from './user-cleanup.js'
 import { parseDeleteOptions } from './delete-options.js'
-import { assertDeletionAllowed } from './deletion-permissions.js'
+import { isDeletionAllowed, DeletionNotAllowedError } from './deletion-permissions.js'
 import { isNotFound } from './is-not-found.js'
 
 import { LOG_PREFIX } from './constants.js'
@@ -334,7 +334,8 @@ export default {
       let directusUser
       try {
         directusUser = (await usersService.readByQuery({
-          filter: {external_identifier: keycloakUserId}
+          filter: {external_identifier: keycloakUserId},
+          fields: ['id', 'external_identifier', 'role.name']
         })).shift()
       } catch (err) {
         logger.error(`${LOG_PREFIX}Failed to look up Directus user: ${err.message}`)
@@ -343,7 +344,7 @@ export default {
         // Directus-only accounts have no Keycloak link: the deletion
         // request then addresses the user by their Directus id
         try {
-          directusUser = await usersService.readOne(keycloakUserId)
+          directusUser = await usersService.readOne(keycloakUserId, {fields: ['id', 'external_identifier', 'role.name']})
         } catch {
           // no Directus user with that id
         }
@@ -360,16 +361,24 @@ export default {
       // linked Directus user cannot be ranked — only its Keycloak account
       // is removed.
       if (directusUser) {
+        // Role names are resolved through the users relation (role.name) —
+        // reading directus_roles directly is not permitted for non-admin
+        // callers. The caller's own role name is read with their own
+        // accountability, which the app relies on everywhere.
+        let callerRoleName = null
         try {
-          await assertDeletionAllowed({
-            callerUser: ctx.user,
-            callerIsAdmin: req.accountability?.admin === true,
-            targetUser: directusUser,
-            services,
-            schema: req.schema
-          })
+          const meService = new UsersService({schema: req.schema, accountability: req.accountability})
+          callerRoleName = (await meService.readOne(req.accountability.user, {fields: ['role.name']}))?.role?.name ?? null
         } catch (err) {
-          return handleErrorResponse(ctx, err)
+          logger.error(`${LOG_PREFIX}Failed to look up caller role: ${err.message}`)
+        }
+        if (!isDeletionAllowed({
+          callerRoleName,
+          callerIsAdmin: req.accountability?.admin === true,
+          targetRoleName: directusUser?.role?.name ?? null
+        })) {
+          logger.info(`${LOG_PREFIX}Deletion denied: caller role "${callerRoleName}" may not delete target role "${directusUser?.role?.name}"`)
+          return handleErrorResponse(ctx, DeletionNotAllowedError())
         }
       }
 
