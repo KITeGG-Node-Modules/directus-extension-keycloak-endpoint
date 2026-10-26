@@ -339,7 +339,20 @@ export default {
       } catch (err) {
         logger.error(`${LOG_PREFIX}Failed to look up Directus user: ${err.message}`)
       }
+      if (!directusUser) {
+        // Directus-only accounts have no Keycloak link: the deletion
+        // request then addresses the user by their Directus id
+        try {
+          directusUser = await usersService.readOne(keycloakUserId)
+        } catch {
+          // no Directus user with that id
+        }
+      }
       report.directusId = directusUser?.id || null
+      // Accounts without a Keycloak link exist only in Directus — no hub
+      // account (keyed by the Keycloak username) and no IdP account to
+      // remove; only the Directus cleanup applies
+      const directusOnlyUser = !!directusUser && !directusUser.external_identifier
 
       // Only callers strictly outranking the target may delete it (admin →
       // anyone, management → students and staff, staff → students;
@@ -363,6 +376,9 @@ export default {
       //
       // 1. JupyterHub
       //
+      if (directusOnlyUser) {
+        report.jupyterhub = {skipped: 'no Keycloak account'}
+      } else {
       try {
         if (!isJupyterHubConfigured()) {
           throw new Error('JupyterHub API is not configured (JUPYTERHUB_API_URL / JUPYTERHUB_API_TOKEN)')
@@ -389,6 +405,7 @@ export default {
           logger.error(`${LOG_PREFIX}JupyterHub step failed: ${err.message}`)
           return report
         }
+      }
       }
 
       //
@@ -422,16 +439,20 @@ export default {
       //
       // 3. Keycloak
       //
-      try {
-        await client.delete(`/users/${keycloakUserId}`)
-        report.keycloak.deleted = true
-      } catch (err) {
-        if (isNotFound(err)) {
+      if (directusOnlyUser) {
+        report.keycloak = {skipped: 'no Keycloak account'}
+      } else {
+        try {
+          await client.delete(`/users/${keycloakUserId}`)
           report.keycloak.deleted = true
-          report.keycloak.note = 'already deleted'
-        } else {
-          report.keycloak.error = err.message
-          logger.error(`${LOG_PREFIX}Keycloak step failed: ${err.message}`)
+        } catch (err) {
+          if (isNotFound(err)) {
+            report.keycloak.deleted = true
+            report.keycloak.note = 'already deleted'
+          } else {
+            report.keycloak.error = err.message
+            logger.error(`${LOG_PREFIX}Keycloak step failed: ${err.message}`)
+          }
         }
       }
 
