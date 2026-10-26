@@ -363,7 +363,9 @@ export default {
           report.jupyterhub = {skipped: 'keycloak user already deleted'}
           logger.info(`${LOG_PREFIX}JupyterHub step skipped: Keycloak user ${keycloakUserId} already deleted`)
         } else {
-          report.jupyterhub = {error: err.message}
+          // Keep the partial progress the hub step achieved (serverStopped,
+          // userDeleted, …) alongside the error
+          report.jupyterhub = { ...(err.jupyterhubReport || {}), error: err.message }
           logger.error(`${LOG_PREFIX}JupyterHub step failed: ${err.message}`)
           return report
         }

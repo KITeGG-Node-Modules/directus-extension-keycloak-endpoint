@@ -68,6 +68,19 @@ export async function deleteJupyterUser ({ username, deleteVolume }) {
     volumeDeleted: false
   }
 
+  try {
+    await deleteJupyterUserSteps({ username, deleteVolume, report })
+    return report
+  } catch (err) {
+    // Carry the partial progress (serverStopped/userDeleted/volumeDeleted)
+    // on the error so the deletion report shows what already succeeded
+    // instead of only the error
+    err.jupyterhubReport = report
+    throw err
+  }
+}
+
+async function deleteJupyterUserSteps ({ username, deleteVolume, report }) {
   // 1. Stop the running server (no-op with 404 when not running or when
   // the user is already gone)
   let userGone = false
@@ -102,8 +115,6 @@ export async function deleteJupyterUser ({ username, deleteVolume }) {
     report.volumeDeleted = existed
     report.volumeAlreadyGone = !existed
   }
-
-  return report
 }
 
 // Stopping a server is asynchronous: poll the user until the server entry
