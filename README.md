@@ -145,7 +145,7 @@ An optional JSON body configures the Directus step:
 {
   "collections": ["deployments", "results", "courses",
     "course_sections", "external_materials", "volumes",
-    "gpu_reservations"],
+    "gpu_reservations", "directus_files"],
   "transferTo": "<directus user id>",
   "deleteJupyterVolume": true
 }
@@ -157,6 +157,11 @@ all of them; types not listed are deleted instead of transferred).
 co-authors; without it they are undeployed and removed), and
 `deleteJupyterVolume` disables the home volume deletion when set to
 `false`.
+
+Files (`directus_files`) have no co-author concept: when listed in
+`collections` with a `transferTo`, they are transferred to the recipient
+(`uploaded_by`); otherwise they are deleted from the database **and the
+file storage**, including the underlying assets.
 
 Every step is idempotent (already-deleted state counts as success), so the
 deletion can simply be re-run after a partial failure. The response carries

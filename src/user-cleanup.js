@@ -11,12 +11,13 @@
 // semantics:
 // - authorsField: m2m field naming the users with co-rights; a remaining
 //   co-author becomes the new owner
-// - userM2MFields: m2m fields referencing users whose junction rows must be
-//   pruned when the user is deleted
 // - userField: field naming the user the object belongs to — either a plain
 //   m2o field or an m2m through a junction (gpu_reservations.user is an m2m;
 //   reservations are deleted with the user, not transferred — they have no
 //   co-author concept)
+// - ownerField: the field the transfer writes the new owner to (defaults to
+//   user_created; files have none — their owner is uploaded_by)
+// - userCreated: false for collections without a user_created column (files)
 export const USER_COLLECTIONS = [
   { collection: 'deployments', authorsField: 'authors', userM2MFields: ['authors'] },
   { collection: 'results', authorsField: 'authors', userM2MFields: ['authors'] },
@@ -24,7 +25,8 @@ export const USER_COLLECTIONS = [
   { collection: 'course_sections' },
   { collection: 'external_materials' },
   { collection: 'volumes' },
-  { collection: 'gpu_reservations', userField: 'user', userM2MFields: ['user'], deleteOnly: true }
+  { collection: 'gpu_reservations', userField: 'user', userM2MFields: ['user'], deleteOnly: true },
+  { collection: 'directus_files', userField: 'uploaded_by', ownerField: 'uploaded_by', userCreated: false }
 ]
 
 export const DEFAULT_COLLECTION_SCOPE = USER_COLLECTIONS.map(c => c.collection)
@@ -98,20 +100,22 @@ export async function cleanupUserObjects ({ services, schema, logger, logPrefix,
   const { ItemsService } = services
 
   for (const entry of USER_COLLECTIONS) {
-    const { collection, authorsField, userField, deleteOnly } = entry
+    const { collection, authorsField, userField, ownerField, userCreated, deleteOnly } = entry
     const service = new ItemsService(collection, { schema, accountability: null })
 
     let items
     try {
       items = await service.readByQuery({
-        filter: userField
-          ? {
-              _or: [
-                { user_created: { _eq: directusUser.id } },
-                buildUserScopeFilter(schema, collection, userField, directusUser.id)
-              ]
-            }
-          : { user_created: { _eq: directusUser.id } },
+      filter: userField
+        ? {
+            _or: [
+              ...(userCreated === false
+                ? []
+                : [{ user_created: { _eq: directusUser.id } }]),
+              buildUserScopeFilter(schema, collection, userField, directusUser.id)
+            ]
+          }
+        : { user_created: { _eq: directusUser.id } },
         fields: [
           'id',
           // junction row ids plus the referenced users, needed to find the
@@ -157,7 +161,7 @@ export async function cleanupUserObjects ({ services, schema, logger, logPrefix,
           transferKind = 'fallback'
         }
 
-        await service.updateOne(item.id, { user_created: newOwner })
+        await service.updateOne(item.id, { [ownerField || 'user_created']: newOwner })
         // The overview and the access checks work off the authors junction,
         // not user_created — a fallback recipient who is not yet an author
         // would own an item that displays no name and that they could not
@@ -184,10 +188,11 @@ export async function cleanupUserObjects ({ services, schema, logger, logPrefix,
     report.errors.push(...itemErrors)
   }
 
-  // Clear the user's attribution on uploaded files. The files themselves
-  // are kept — they are media assets that transferred content may still
-  // reference, and deleting them would break it — so the ownership is just
-  // dropped. Without this, the final user deletion fails on
+  // Clear leftover file attributions. By this point the user's files were
+  // either transferred to a recipient or deleted (storage included) — this
+  // pass is a safety net for anything remaining (files the user only
+  // modified, or transfers that failed): the files are kept, the ownership
+  // is dropped. Without it, the final user deletion fails on
   // directus_files_uploaded_by_foreign.
   try {
     const filesService = new ItemsService('directus_files', { schema, accountability: null })
