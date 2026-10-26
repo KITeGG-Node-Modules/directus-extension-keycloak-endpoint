@@ -2,6 +2,19 @@ import k8s from '@kubernetes/client-node'
 import { isNotFound } from './is-not-found.js'
 import { JUPYTERHUB_NAMESPACE } from './config.js'
 
+// @kubernetes/client-node's HttpError always says just "HTTP request failed"
+// — rewrite the message with the API server's own status and reason (e.g.
+// "403: ... is forbidden: User ... cannot delete resource ...") so the step
+// report names the actual cause. The original error object is kept intact so
+// isNotFound() still works.
+export function enrichKubernetesError (err) {
+  if (err?.name === 'HttpError' && err.statusCode) {
+    const detail = err.body?.message || (typeof err.body === 'string' ? err.body.trim() : '')
+    err.message = `Kubernetes API returned ${err.statusCode}${detail ? `: ${detail}` : ''}`
+  }
+  return err
+}
+
 // In-cluster Kubernetes client (the Directus pod runs with a ServiceAccount
 // that can manage the JupyterHub namespace resources). The singleton keeps
 // the loaded config across requests.
@@ -37,7 +50,7 @@ export async function deletePersistentVolumeClaim (name, namespace = JUPYTERHUB_
     )
     return true
   } catch (err) {
-    if (!isNotFound(err)) throw err
+    if (!isNotFound(err)) throw enrichKubernetesError(err)
     return false
   }
 }
