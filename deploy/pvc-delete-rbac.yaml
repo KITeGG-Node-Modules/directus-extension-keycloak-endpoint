@@ -1,0 +1,34 @@
+# Lets the Directus pod's ServiceAccount (where this extension runs) delete
+# JupyterHub home volumes: the "Remove user" endpoint's safety net deletes
+# the user's PVC claim-<username> in the JupyterHub namespace.
+#
+# Apply with the placeholders replaced, e.g.:
+#   sed -e 's/<DIRECTUS_NAMESPACE>/kitegg/' \
+#       -e 's/<DIRECTUS_SERVICEACCOUNT>/directus/' \
+#       deploy/pvc-delete-rbac.yaml | kubectl apply -f -
+#
+# JUPYTERHUB_NAMESPACE must match the namespace the extension deletes the
+# PVCs in (default: jupyterhub).
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: kitegg-directus-pvc-delete
+  namespace: jupyterhub
+rules:
+  - apiGroups: [""]
+    resources: ["persistentvolumeclaims"]
+    verbs: ["delete", "get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: kitegg-directus-pvc-delete
+  namespace: jupyterhub
+subjects:
+  - kind: ServiceAccount
+    name: <DIRECTUS_SERVICEACCOUNT>
+    namespace: <DIRECTUS_NAMESPACE>
+roleRef:
+  kind: Role
+  name: kitegg-directus-pvc-delete
+  apiGroup: rbac.authorization.k8s.io

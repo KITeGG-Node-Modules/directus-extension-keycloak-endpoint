@@ -160,6 +160,25 @@ deletion can simply be re-run after a partial failure. The response carries
 a per-step report (`jupyterhub`, `directus`, `keycloak`) with the outcome of
 each step, per-object errors, and an overall `success` flag.
 
+#### Kubernetes permissions for the volume deletion
+
+The extension runs inside the Directus pod, so the pod's ServiceAccount
+needs permission to delete the home-volume PVCs in the JupyterHub namespace.
+Apply [`deploy/pvc-delete-rbac.yaml`](deploy/pvc-delete-rbac.yaml) with the
+placeholders replaced:
+
+```sh
+sed -e 's/<DIRECTUS_NAMESPACE>/<ns>/' \
+    -e 's/<DIRECTUS_SERVICEACCOUNT>/<sa>/' \
+    deploy/pvc-delete-rbac.yaml | kubectl apply -f -
+```
+
+Without this grant the deletion still removes the hub account but fails at
+the volume step with `Kubernetes API returned 403: … is forbidden: User
+"system:serviceaccount:…" cannot delete resource "persistentvolumeclaims"…`
+— the report names the exact ServiceAccount to grant. Apply the role and
+re-run the deletion; every earlier step is 404-tolerant.
+
 ## Last login and last seen
 
 Both user endpoints (`GET /keycloak/users` and `GET /keycloak/users/<ID>`)
