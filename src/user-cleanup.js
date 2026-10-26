@@ -76,11 +76,14 @@ export function findUserJunction (schema, collection, field) {
 }
 
 /**
- * Handles all in-scope objects of the deleted user and prunes their
- * remaining user references from junction tables.
+ * Handles all objects of the deleted user and prunes their remaining user
+ * references from junction tables.
  *
- * Runs with system accountability: the orchestrating admin must be able to
- * clean up objects they could not necessarily read or modify themselves.
+ * Every object is either transferred (to the first remaining co-author, or
+ * to the fallback recipient when its type was requested in the scope) or
+ * deleted — nothing keeps referencing the deleted account. Runs with
+ * system accountability: the orchestrating admin must be able to clean up
+ * objects they could not necessarily read or modify themselves.
  * Every operation is idempotent — items already handled on an earlier run
  * simply no longer match.
  *
@@ -95,7 +98,6 @@ export async function cleanupUserObjects ({ services, schema, logger, logPrefix,
   const { ItemsService } = services
 
   for (const entry of USER_COLLECTIONS) {
-    if (scope.length && !scope.includes(entry.collection)) continue
     const { collection, authorsField, userField, deleteOnly } = entry
     const service = new ItemsService(collection, { schema, accountability: null })
 
@@ -142,9 +144,11 @@ export async function cleanupUserObjects ({ services, schema, logger, logPrefix,
         let newOwner = coAuthors[0]
         let transferKind = 'co_author'
         if (!newOwner) {
-          if (!transferTo) {
-            // true orphan: undeployed (deployments, via the kubernetes
-            // endpoint's undeploy-on-delete hook) and removed with the item
+          // Fallback transfer only when the type was explicitly requested
+          // in the scope and a recipient was chosen — otherwise the object
+          // is undeployed (deployments, via the kubernetes endpoint's
+          // undeploy-on-delete hook) and removed
+          if (!transferTo || !scope.includes(collection)) {
             await service.deleteOne(item.id)
             report.deletedItems[collection] = (report.deletedItems[collection] || 0) + 1
             continue
@@ -180,13 +184,10 @@ export async function cleanupUserObjects ({ services, schema, logger, logPrefix,
     report.errors.push(...itemErrors)
   }
 
-  // Prune the deleted user's junction rows across all in-scope collections
+  // Prune the deleted user's junction rows across all known collections
   // — including items owned by other users (membership lists etc. must not
-  // dangle-reference the deleted account). Out-of-scope collections keep
-  // their rows on purpose: their objects are explicitly excluded from the
-  // deletion.
+  // dangle-reference the deleted account)
   for (const entry of USER_COLLECTIONS) {
-    if (scope.length && !scope.includes(entry.collection)) continue
     for (const field of entry.userM2MFields || []) {
       const junction = findUserJunction(schema, entry.collection, field)
       if (!junction) {

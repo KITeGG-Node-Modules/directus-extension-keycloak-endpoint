@@ -129,13 +129,14 @@ Deletes the user across all three systems in dependency order:
    `JUPYTERHUB_API_TOKEN` (plus `JUPYTERHUB_NAMESPACE`, default
    `jupyterhub`); without them the step fails loudly instead of silently
    leaving hub users behind.
-2. **Directus**: objects created by the user are either transferred to a
-   remaining co-author, to a fallback user from the options, or — when
-   neither exists — undeployed (via the kubernetes endpoint's
-   undeploy-on-delete hook) and removed. The user's rows in the
-   authors/members/collaborators junction tables are pruned, then the
-   Directus user is deleted. If this step fails, the Keycloak account is
-   left untouched so the deletion can be retried.
+2. **Directus**: every object of the user is either transferred to a
+   remaining co-author, to the fallback user from the options (only for
+   types requested in `collections`), or — when neither applies —
+   undeployed (via the kubernetes endpoint's undeploy-on-delete hook) and
+   removed. Nothing keeps referencing the deleted account. The user's rows
+   in the authors/members/collaborators junction tables are pruned, then
+   the Directus user is deleted. If this step fails, the Keycloak account
+   is left untouched so the deletion can be retried.
 3. **Keycloak**: the IdP account (already-deleted is treated as success).
 
 An optional JSON body configures the Directus step:
@@ -150,10 +151,12 @@ An optional JSON body configures the Directus step:
 }
 ```
 
-`collections` limits the object scope (default: all of the above),
-`transferTo` receives orphaned objects (without co-authors; without it they
-are undeployed and removed), and `deleteJupyterVolume` disables the home
-volume deletion when set to `false`.
+`collections` lists the types eligible for fallback transfers (default:
+all of them; types not listed are deleted instead of transferred).
+`transferTo` receives orphaned objects of requested types (without
+co-authors; without it they are undeployed and removed), and
+`deleteJupyterVolume` disables the home volume deletion when set to
+`false`.
 
 Every step is idempotent (already-deleted state counts as success), so the
 deletion can simply be re-run after a partial failure. The response carries
