@@ -1,30 +1,30 @@
 {
-	"name": "directus-extension-keycloak-endpoint",
-	"description": "Keycloak user administration through Directus",
-	"icon": "extension",
-	"version": "1.0.0",
-	"keywords": [
-		"directus",
-		"directus-extension",
-		"directus-custom-endpoint"
-	],
-	"type": "module",
-	"directus:extension": {
-		"type": "endpoint",
-		"path": "src/index.js",
-		"source": "src/index.js",
-		"host": "^10.1.5"
-	},
-	"devDependencies": {
-		"@directus/extensions-sdk": "10.1.5"
-	},
-	"dependencies": {
-		"@directus/errors": "^0.0.1",
-		"axios": "^1.4.0",
-		"kitegg-directus-extension-common": "github:KITeGG-Node-Modules/kitegg-directus-extension-common",
-		"querystring": "^0.2.1",
-		"secure-random-password": "^0.2.3",
-		"validator": "^13.9.0",
+  "name": "@kitegg/directus-extension-keycloak-endpoint",
+  "description": "Keycloak user administration through Directus",
+  "icon": "extension",
+  "version": "1.0.0",
+  "keywords": [
+    "directus",
+    "directus-extension",
+    "directus-custom-endpoint"
+  ],
+  "type": "module",
+  "directus:extension": {
+    "type": "endpoint",
+    "path": "src/index.js",
+    "source": "src/index.js",
+    "host": "^10.1.5"
+  },
+  "devDependencies": {
+    "@directus/extensions-sdk": "10.1.5"
+  },
+  "dependencies": {
+    "@directus/errors": "^0.0.1",
+    "axios": "^1.4.0",
+    "kitegg-directus-extension-common": "github:KITeGG-Node-Modules/kitegg-directus-extension-common",
+    "querystring": "^0.2.1",
+    "secure-random-password": "^0.2.3",
+    "validator": "^13.9.0",
 		"@kubernetes/client-node": "0.18.1"
 	}
 }
